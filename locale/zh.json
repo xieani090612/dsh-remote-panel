@@ -1,0 +1,4 @@
+{
+  "title": "远程状态面板",
+  "description": "探测本机 WSL 发行版与指定 IP 的远程机器（CPU/内存/磁盘/GPU/Docker/进程/服务），渲染到独立的 WinUI 3 悬浮窗。同时提供 /wsx 命令、remote_* 智能体工具、Skills 与 MCP stdio 服务器。"
+}

@@ -1,0 +1,73 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>DshWsxPanel</RootNamespace>
+    <!-- exe 名必须是 WsxPanel.exe：宿主插件按这个文件名在 dist\ 与 app\bin\ 里找它。 -->
+    <AssemblyName>WsxPanel</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- 图标嵌进 exe 资源段（资源管理器 / exe 图标走这条）；
+         窗口启动时还会再用 AppWindow.SetIcon 显式设一次，非打包 WinUI 应用
+         在任务栏/Alt+Tab 上有几率回落到默认图标。
+         生成方式见 app/make-icon.py（纯 Pillow 画的，无第三方素材）。 -->
+    <ApplicationIcon>app.ico</ApplicationIcon>
+
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <UseWinUI>true</UseWinUI>
+
+    <!-- 必须为 true，即使我们不做 MSIX 打包。
+         这个开关同时决定了「用哪套 PRI 工具链」：
+           true  → 用 WindowsAppSDK 自带的独立 MSIX 工具（Microsoft.Build.Msix.dll，
+                   随 NuGet 包发布，无需 Visual Studio）；
+           false → 回落到 MrtCore.PriGen.targets，它依赖 Visual Studio 才有的
+                   Microsoft.Build.Packaging.Pri.Tasks.dll，在纯 .NET SDK 环境下必定报
+                   MSB4062（未能加载任务 ExpandPriContent）。
+         打包本身由下面的 WindowsPackageType=None 关掉。 -->
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <EnableCoreMrtTooling>false</EnableCoreMrtTooling>
+
+    <!-- 非打包（unpackaged）运行：不依赖 MSIX，也不需要预装 Windows App Runtime。
+         配合 WindowsAppSDKSelfContained，运行时 DLL 直接落在输出目录里，
+         所以插件把这个 exe 拷到哪台同架构机器都能跑。 -->
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <SelfContained>true</SelfContained>
+    <PublishTrimmed>false</PublishTrimmed>
+
+    <!-- 只带需要的卫星资源（WinUI / .NET 的本地化 mui 文件）。
+         默认会把 76 种语言的全部资源都拷进输出目录，约占 3.3 MB —— 对本插件
+         完全是浪费。这里只保留运行界面真正可能用到的两种：
+           en-us  系统语言兜底（WinUI 内置控件的英文文案）
+           zh-CN  中文系统上的内置控件文案，本插件界面本身就是中文
+         想加别的语言就往这个分号列表里加，例如 en-us;zh-CN;ja-JP。
+         注意：**不要**为了省这几 MB 只写 en-us，中文系统上 WinUI 自带控件
+         （Flyout/ComboBox 等）会退回英文，界面中英混排。 -->
+    <SatelliteResourceLanguages>en-us;zh-CN</SatelliteResourceLanguages>
+
+    <!-- 自己写入口点：需要在创建窗口之前完成单实例互斥体、命令行解析，
+         并且要支持无界面（headless）的 dump-status 路径。 -->
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <AssemblyTitle>DSH 远程目标面板</AssemblyTitle>
+    <Product>DSH Remote Panel</Product>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.7.260224002" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.9169" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- ico 必须落到 exe 旁边：窗口启动时用 AppWindow.SetIcon(<exe 旁>\app.ico) 兜底。 -->
+    <Content Include="app.ico" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

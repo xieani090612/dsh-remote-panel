@@ -1,0 +1,4 @@
+{
+  "title": "Remote Status Panel",
+  "description": "Probe local WSL distributions and remote machines over SSH (CPU, memory, disk, GPU, Docker, processes, services) and render them in a standalone WinUI 3 window. Adds the /wsx command, remote_* agent tools, Skills, and an MCP stdio server."
+}

@@ -1,0 +1,179 @@
+# ============================================================================
+# dsh-remote-panel —— DSH bundle patch
+# ============================================================================
+# 插件挂载声明。DSH 启动时按 bundle 层栈叠加各插件 patch，本文件把本插件的
+# 宿主插件、MCP 服务器与 Skills 目录插进 profile 的配置树。
+# package.json 的 dsh.bundle.patch 指向本文件。
+#
+# ⚠ 格式铁律：**顶层 patch 必须顶格（第 0 列）**。
+#   本文件是一个「顶层 patch 数组」，`- insert:` / `- id: ...` 都必须从第 0 列起写。
+#   一旦多缩进 4 格，它就不再是一条 patch，而是上面某个 `- insert:` 的**子条目**
+#   （＝「要被插进去的插件行」），后果是：
+#     · 本来想「改某一行」的 patch，变成在树末尾**追加一条重复条目**。
+#       它之所以看起来还能生效纯属巧合：EntryGroup.update 用
+#       Object.fromEntries(config) 建 id 表，同 id 后写覆盖先写，追加的那条
+#       恰好顶掉了 base 的那条。不要依赖这种行为。
+#     · 本来想「插入新行」的，会变成一个**没有 name** 的条目 `{insert: [...]}`。
+#       Loader 会走到 EntryTree.import(undefined)，抛
+#       TypeError: Cannot read properties of undefined (reading 'startsWith')，
+#       只在日志里报一个 error，该行永远不会挂载。
+#   下面 MCP 那一段就是这么丢的（skill-filesystem 那段则是靠上面的巧合活着）。
+#   改完本文件后自检：每条顶层 patch 的 `-` 都必须是该行的第 1 个字符。
+#
+# 安装（插件管理器里添加、或命令行）：
+#   dsh plugin --profile desktop add link:C:\路径\dsh-remote-panel     # 本地开发
+#   dsh plugin --profile desktop add C:\路径\dsh-remote-panel          # 拷一份进 profile
+# ============================================================================
+
+- insert:
+    # ---------------------------------------------------------------------
+    # 宿主插件本体：连接、采集、状态文件、/wsx 命令、remote_* 工具、网页路由
+    # ---------------------------------------------------------------------
+    - id: dsh-remote-panel
+      name: dsh-remote-panel
+      config:
+        # 是否随 DSH 启动自动拉起 WinUI 3 面板窗口。
+        # 窗口自带单实例互斥体，重复拉起只会把已有窗口前置。
+        autoLaunch: true
+
+        # 探测间隔（毫秒）。15s 对本机/局域网足够；跨公网可以调大。
+        probeIntervalMs: 15000
+
+        # 单次探测的超时。WSL 冷启动实测要 18–88 秒，所以默认给得比较宽 ——
+        # 给窄了会让本机 WSL 目标每隔几轮就被误判成离线。
+        timeoutMs: 60000
+
+        # 建立连接的超时（ssh ConnectTimeout）。
+        connectTimeoutMs: 10000
+
+        # 是否允许改动目标机的操作（docker 启停、服务启停、文件上传）。
+        # 设成 false 就只剩只读能力，所有写操作会被明确拒绝。
+        allowMutations: true
+
+        # 采集开关。关掉能显著降低对目标机的负载。
+        collectDocker: true
+        collectProcesses: true
+        collectServices: true
+        collectGpu: true
+
+        # 每个目标保留多少个历史采样点（面板的迷你趋势线用）。
+        historyLength: 40
+
+        # 快照落盘 / 心跳间隔。
+        flushIntervalMs: 500
+        heartbeatMs: 2000
+
+        # 同时最多探测几个目标，避免一次加载对着一堆机器同时握手。
+        maxConcurrentProbes: 4
+
+        # 目标清单。两种形态：
+        #   kind: wsl —— 本机 WSL 发行版，channel 决定走哪条通道：
+        #                auto（默认）= 先试 SSH，失败再落到 wsl.exe
+        #                ssh  = 只走 SSH（需要发行版里跑着 sshd，见 wsl-link 技能）
+        #                wsl  = 只走 wsl.exe（受限沙箱下会被 WSL 服务拒绝）
+        #   kind: ssh —— 远程机器，复用 ~/.ssh/config、ssh-agent 与已知主机
+        targets:
+          - kind: wsl
+            id: wsl-ubuntu-2404
+            name: WSL Ubuntu 24.04
+            distro: Ubuntu-24.04
+            channel: auto
+            user: root
+            tags: [local, wsl]
+            # 这些服务会出现在 /wsx services 与面板里。
+            services: [ssh, docker, cron, systemd-resolved]
+
+          # 本机原有的 Ubuntu-22.04 因为虚拟磁盘损坏（WSL_E_DISK_CORRUPTED）
+          # 已被 `wsl --unregister` 清理，所以这里不再列它。
+          # 以后想加回别的发行版，照上面 24.04 那段复制一份、改 id/name/distro 即可。
+
+          # 远程机器的例子（改掉 host 就能用）：
+          #
+          # - kind: ssh
+          #   id: lab-gpu-01
+          #   name: 实验机 GPU-01
+          #   host: 192.168.1.50
+          #   port: 22
+          #   user: ubuntu
+          #   identityFile: ~/.ssh/id_ed25519
+          #   tags: [lab, gpu]
+          #   services: [docker, nvidia-persistenced]
+          #
+          # - kind: ssh
+          #   name: 生产机（靠 ~/.ssh/config 的 Host 别名）
+          #   host: prod-web-1          # 这里写 ~/.ssh/config 里的 Host 别名即可
+          #   user: deploy
+          #   strictHostKeyChecking: true
+
+# ---------------------------------------------------------------------
+# Skills：刻意**不** patch skill-filesystem
+# ---------------------------------------------------------------------
+# 这里曾经有一条 `- id: skill-filesystem` 的 patch，本意是把插件自带的 skills/
+# 挂成智能体技能。它**从设计上就不可能生效**，已删除。真正的原因（已按源码核实）：
+#
+#   (a) dsh-web-app\cordis.patch.yml:484-488 **故意**把宿主那两行禁用了：
+#         - id: skill-filesystem / disabled: true
+#         - id: tool-skill       / disabled: true
+#       注释写明「base 的宿主 skill-filesystem 行在这里被禁用（本地发现由 preset 拥有）」。
+#       实测合成后的行就是 {"id":"skill-filesystem",...,"disabled":true}。
+#   (b) 非 insert 的 patch **只赋它带的键**（cordis-plugin-include 里是
+#       `for (const [k,v] of Object.entries(overrides)) target[k] = v`）。
+#       我们只带了 `config`，所以**永远清不掉** web-app 层已经设上的 disabled。
+#       → 那条 patch 的 customSkillDirs 一直是死的。
+#   (c) 它一度「看起来生效」，是**缩进 bug 的副作用**：当时那一行被误缩进成了
+#       第一段 insert 的子项，于是被当成一条**追加的重复 entry**，
+#       而 EntryGroup 创建时是整份替换 options（`this.options = options`），
+#       顺带把继承来的 disabled 丢了、把宿主行重新启用。
+#       —— 那个偶然才是「改这个文件会实时影响技能」的原因。
+#
+# 所以：不要在 bundle patch 里用 `config:` 去改这行，它改不动。
+# 本插件的技能改为放进**默认扫描根**，由 preset 自己挂的 skill-filesystem 扫描：
+#     %USERPROFILE%\.dsh\skills\remote-panel\SKILL.md
+#     %USERPROFILE%\.dsh\skills\remote-panel-troubleshooting\SKILL.md
+# 改内容就编辑本插件的 skills/ 再拷过去，或直接编辑 $DSH_HOME/skills 里那份
+# （该目录带 chokidar 监视，实时生效）。
+
+# ---------------------------------------------------------------------
+# MCP：把同一套 remote_* 能力通过 MCP stdio 暴露出去
+# ---------------------------------------------------------------------
+# DSH 自带 @deepseek-ai/dsh-mcp-client，所以这一行不需要额外依赖。
+#   已核实：它是 @deepseek-ai/dsh-desktop-runtime 的 dependencies 之一
+#   （该 runtime package.json 第 170 行），而 profile 的 node_modules 里
+#   根本没有 @deepseek-ai/* —— 所有 `@deepseek-ai/...` 裸名都靠 DSH 的模块路由
+#   指到 app 自带的 node_modules（base 层每一行都走这条），所以本行不必在
+#   bundle 的 package.json 里再声明一次依赖。
+#
+# ⚠ 本条曾经「根本没挂上」（Config 里查不到任何 entry），根因**已定位**：
+#   不是 !!js、不是绝对路径、不是依赖没声明、也不是 scoped 包名被改写，
+#   而是本段整体多缩进了 4 格 —— 它被并进了上面那个 `insert:` 列表，
+#   变成一个**没有 name** 的条目 `{insert: [...]}`，Loader 在
+#   EntryTree.import(undefined) 处抛
+#   TypeError: Cannot read properties of undefined (reading 'startsWith')，
+#   于是这一行永远不会挂载。修法就是把它顶格，成为独立的顶层 patch。
+#   （顺带：dsh-app-boot 的 anchorInsertedPluginNames 只在 name 是绝对路径或
+#    以 ./ ../ 开头时才改写成 file: URL，`@deepseek-ai/...` 是原样保留的，
+#    这条怀疑可以彻底排除。）
+#
+# 路径为什么用 !!js 拼而不是写死绝对路径：
+#   patch 里拿不到 import.meta.url（不是模块作用域），但**可以**用
+#   process.execPath（就是当前在跑 DSH 的那个 node）和 DSH_PROFILE_DIR
+#   （profile 启动的 Harness 一定会注入，实测有值）。
+#   `!!js` 写在 config 里是有效写法：cordis-plugin-loader 的 internal/config
+#   瀑布会在 schema 校验前对整棵 config 递归求值（lib\index.js:604-608），
+#   dsh-base 自身就大量这么用。
+#   拼出来的是「本机 profile 下装好的那份 bin/mcp-server.js」，所以无论你是
+#   link 安装还是从 tgz 装，都不用改这个文件 —— 也就不会把你的家目录路径
+#   写进要发布的包里。
+# 不想用 MCP 就把这一段整块删掉，不影响 /wsx、remote_* 工具与面板。
+- insert:
+    - id: mcp-remote-panel
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: remote_panel
+        transport: stdio
+        command: !!js process.execPath
+        args: !!js "process.env.DSH_PROFILE_DIR ? [process.env.DSH_PROFILE_DIR + '/node_modules/dsh-remote-panel/bin/mcp-server.js'] : []"
+        cwd: !!js "process.env.DSH_PROFILE_DIR || process.cwd()"
+        # 目标机连不上不该把 DSH 启动拖挂 —— 探测失败在工具里正常回报。
+        failOnStartupError: false
+        toolCallTimeoutMs: 120000

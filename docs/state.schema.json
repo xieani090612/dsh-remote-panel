@@ -1,0 +1,524 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local/dsh-remote-panel/state.schema.json",
+  "title": "dsh-remote-panel state snapshot",
+  "description": "由 dsh-remote-panel Host 插件原子写入 $DSH_HOME/remote-panel/state.json 的快照。WinUI 3 面板与 Web 客户端面板都只是这份文件的读取方。写入采用临时文件 + 重命名，因此读取方永远不会看到半份文档。 / Atomic snapshot written by the dsh-remote-panel Host plugin to $DSH_HOME/remote-panel/state.json. The WinUI 3 panel and the Web client panel are both pure readers of this file. Written with temp-file + rename so a reader never sees a partial document.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema", "generatedAt", "host", "targets", "totals"],
+  "properties": {
+    "schema": {
+      "type": "integer",
+      "const": 1,
+      "description": "快照 schema 版本。 / Snapshot schema version."
+    },
+    "generatedAt": {
+      "type": "integer",
+      "description": "构建这份快照时的 Unix epoch 毫秒。读取方把早于 `staleSeconds` 的快照视为 Host 已丢失。 / Unix epoch milliseconds when this snapshot was built. Readers treat a snapshot older than `staleSeconds` as a lost Host."
+    },
+    "host": {
+      "type": "object",
+      "description": "写入这份快照的 Host 进程。 / The Host process that wrote this snapshot.",
+      "additionalProperties": true,
+      "required": ["pid", "pluginVersion", "stateFile"],
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "description": "Host 进程 ID。 / Host process id."
+        },
+        "pluginVersion": {
+          "type": "string",
+          "description": "dsh-remote-panel 插件版本。 / dsh-remote-panel plugin version."
+        },
+        "stateFile": {
+          "type": "string",
+          "description": "这份快照所在的文件路径。 / Path of the file holding this snapshot."
+        },
+        "dshHome": {
+          "type": "string",
+          "description": "解析出的 DSH home 目录（`$DSH_HOME`）。 / Resolved DSH home directory (`$DSH_HOME`)."
+        },
+        "platform": {
+          "type": "string",
+          "description": "Host 平台，例如 `win32`。 / Host platform, for example `win32`."
+        },
+        "startedAt": {
+          "type": "integer",
+          "description": "Host 进程启动时的 Unix epoch 毫秒。 / Unix epoch milliseconds when the Host process started."
+        },
+        "revision": {
+          "type": "integer",
+          "description": "单调递增的快照计数器，每次成功写入都会加一。 / Monotonic snapshot counter, incremented on every successful write."
+        },
+        "stopped": {
+          "type": "boolean",
+          "description": "仅在 dispose() 写下的最后一帧中出现且为 true。读取方此时必须显示 “Host stopped”，而不是超时。 / Present and true only in the final frame written by dispose(). Readers must show 'Host stopped' rather than a timeout."
+        },
+        "error": {
+          "type": "string",
+          "description": "最近一次写入/序列化错误（如果有）。仅供诊断。 / Last write/serialize error, if any. Diagnostic only."
+        }
+      }
+    },
+    "totals": {
+      "type": "object",
+      "description": "各状态目标的计数。 / Counts of targets by status.",
+      "additionalProperties": false,
+      "properties": {
+        "targets": {
+          "type": "integer",
+          "description": "已配置目标总数。 / Total number of configured targets."
+        },
+        "online": {
+          "type": "integer",
+          "description": "状态为 online 的目标数。 / Targets whose status is online."
+        },
+        "offline": {
+          "type": "integer",
+          "description": "状态为 offline 的目标数。 / Targets whose status is offline."
+        },
+        "probing": {
+          "type": "integer",
+          "description": "正在探测的目标数。 / Targets currently probing."
+        },
+        "unknown": {
+          "type": "integer",
+          "description": "从未探测过的目标数。 / Targets never probed yet."
+        },
+        "dockerRunning": {
+          "type": "integer",
+          "description": "所有在线目标上运行中的容器总数。 / Running containers across all online targets."
+        }
+      }
+    },
+    "targets": {
+      "type": "array",
+      "description": "每个已配置目标一项，排序为：先错误、再在线、然后按名称。 / One entry per configured target, sorted: errors first, then online, then by name.",
+      "items": {
+        "type": "object",
+        "description": "单个目标的状态与最新指标。 / State and latest metrics of one target.",
+        "additionalProperties": true,
+        "required": ["id", "name", "kind", "status"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "配置中的目标 id。 / Target id from the configuration."
+          },
+          "name": {
+            "type": "string",
+            "description": "人类可读的目标名。 / Human-readable target name."
+          },
+          "kind": {
+            "type": "string",
+            "enum": ["wsl", "ssh"],
+            "description": "wsl = 本地 WSL 发行版，ssh = 通过 SSH 连接的远程机器。 / wsl = a local WSL distribution, ssh = a remote machine reached over SSH."
+          },
+          "host": {
+            "type": "string",
+            "description": "主机名、IP，或 WSL 发行版名。 / Hostname, IP, or WSL distribution name."
+          },
+          "user": {
+            "type": "string",
+            "description": "该目标使用的登录用户。 / Login user used for this target."
+          },
+          "port": {
+            "type": "integer",
+            "description": "SSH 端口。 / SSH port."
+          },
+          "tags": {
+            "type": "array",
+            "description": "配置里给该目标打的标签。 / Tags assigned to this target in the configuration.",
+            "items": {
+              "type": "string",
+              "description": "一个标签。 / One tag."
+            }
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "目标是否启用；禁用的目标会被探测循环跳过。 / Whether the target is enabled; disabled targets are skipped by the probe loop."
+          },
+          "status": {
+            "type": "string",
+            "enum": ["online", "offline", "probing", "unknown"],
+            "description": "unknown = 尚未探测过。 / unknown = never probed yet."
+          },
+          "error": {
+            "type": "string",
+            "description": "status 为 offline 时的连接错误文本。绝不含凭据。 / Connection error text when status is offline. Never contains credentials."
+          },
+          "latencyMs": {
+            "type": "integer",
+            "description": "最近一次探测建立通道并采集所花的实际毫秒数。 / Wall-clock milliseconds spent establishing the channel and collecting, for the last probe."
+          },
+          "lastProbeAt": {
+            "type": "integer",
+            "description": "最近一次探测的 Unix epoch 毫秒。 / Unix epoch milliseconds of the last probe."
+          },
+          "lastOnlineAt": {
+            "type": "integer",
+            "description": "该目标最近一次在线的时间，Unix epoch 毫秒。 / Unix epoch milliseconds when this target was last online."
+          },
+          "nextProbeAt": {
+            "type": "integer",
+            "description": "计划中下一次探测的时间，Unix epoch 毫秒。 / Unix epoch milliseconds of the scheduled next probe."
+          },
+          "consecutiveFailures": {
+            "type": "integer",
+            "description": "连续失败次数；任何一次成功都会清零。 / Number of consecutive failures; reset by any success."
+          },
+          "woke": {
+            "type": "boolean",
+            "description": "仅 WSL：这次探测不得不启动该发行版（冷启动，18-88s）。 / WSL only: the distribution had to be started for this probe (cold start, 18-88s)."
+          },
+          "facts": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "一次性采集并缓存的静态身份信息：hostname、os、kernel、arch、cpuModel、cpuCount、distro、wsl 标志。 / Static identity collected once and cached: hostname, os, kernel, arch, cpuModel, cpuCount, distro, wsl flag.",
+            "properties": {
+              "hostname": {
+                "type": "string",
+                "description": "远端主机名。 / Remote hostname."
+              },
+              "os": {
+                "type": "string",
+                "description": "操作系统名称（PRETTY_NAME）。 / Operating system name (PRETTY_NAME)."
+              },
+              "kernel": {
+                "type": "string",
+                "description": "内核版本。 / Kernel version."
+              },
+              "arch": {
+                "type": "string",
+                "description": "CPU 架构，例如 x86_64。 / CPU architecture, for example x86_64."
+              },
+              "cpuModel": {
+                "type": "string",
+                "description": "CPU 型号字符串。 / CPU model string."
+              },
+              "cpuCount": {
+                "type": "integer",
+                "description": "逻辑 CPU 数量。 / Number of logical CPUs."
+              },
+              "distro": {
+                "type": "string",
+                "description": "WSL 发行版名（仅 WSL 目标）。 / WSL distribution name (WSL targets only)."
+              },
+              "wsl": {
+                "type": "boolean",
+                "description": "目标是否为 WSL 发行版。 / Whether the target is a WSL distribution."
+              },
+              "uptimeSec": {
+                "type": "integer",
+                "description": "系统运行时长，单位秒。 / System uptime in seconds."
+              }
+            }
+          },
+          "metrics": {
+            "type": ["object", "null"],
+            "additionalProperties": true,
+            "description": "最新的只读主机指标。探测无法采集时缺失或为 null。 / Latest read-only host metrics. Absent or null when the probe could not collect.",
+            "properties": {
+              "cpu": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "CPU 使用率与负载均值。 / CPU usage and load averages.",
+                "properties": {
+                  "usagePercent": {
+                    "type": "number",
+                    "description": "距离上次采样的 CPU 使用率百分比。 / CPU usage percent since the previous sample."
+                  },
+                  "load1": {
+                    "type": "number",
+                    "description": "1 分钟负载均值。 / 1-minute load average."
+                  },
+                  "load5": {
+                    "type": "number",
+                    "description": "5 分钟负载均值。 / 5-minute load average."
+                  },
+                  "load15": {
+                    "type": "number",
+                    "description": "15 分钟负载均值。 / 15-minute load average."
+                  }
+                }
+              },
+              "memory": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "内存与交换分区用量。 / Memory and swap usage.",
+                "properties": {
+                  "totalBytes": {
+                    "type": "integer",
+                    "description": "物理内存总量，字节。 / Total physical memory in bytes."
+                  },
+                  "usedBytes": {
+                    "type": "integer",
+                    "description": "已用内存，字节。 / Used memory in bytes."
+                  },
+                  "availableBytes": {
+                    "type": "integer",
+                    "description": "可用内存，字节。 / Available memory in bytes."
+                  },
+                  "swapTotalBytes": {
+                    "type": "integer",
+                    "description": "交换分区总量，字节。 / Total swap in bytes."
+                  },
+                  "swapUsedBytes": {
+                    "type": "integer",
+                    "description": "已用交换分区，字节。 / Used swap in bytes."
+                  },
+                  "usagePercent": {
+                    "type": "number",
+                    "description": "已用内存百分比。 / Used memory percent."
+                  }
+                }
+              },
+              "disks": {
+                "type": "array",
+                "description": "已挂载的文件系统；伪文件系统已被过滤掉。 / Mounted filesystems; pseudo-filesystems are filtered out.",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "description": "一个挂载点。 / One mount point.",
+                  "required": ["mount", "totalBytes", "usedBytes"],
+                  "properties": {
+                    "mount": {
+                      "type": "string",
+                      "description": "挂载点路径。 / Mount point path."
+                    },
+                    "fs": {
+                      "type": "string",
+                      "description": "文件系统类型。 / Filesystem type."
+                    },
+                    "totalBytes": {
+                      "type": "integer",
+                      "description": "文件系统总量，字节。 / Filesystem size in bytes."
+                    },
+                    "usedBytes": {
+                      "type": "integer",
+                      "description": "已用字节。 / Used bytes."
+                    },
+                    "availableBytes": {
+                      "type": "integer",
+                      "description": "可用字节。 / Available bytes."
+                    },
+                    "usagePercent": {
+                      "type": "number",
+                      "description": "已用百分比。 / Used percent."
+                    }
+                  }
+                }
+              },
+              "gpus": {
+                "type": "array",
+                "description": "尽力而为。没有 nvidia-smi 时为空。 / Best-effort. Empty when nvidia-smi is absent.",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "description": "一块 GPU。 / One GPU.",
+                  "properties": {
+                    "index": {
+                      "type": "integer",
+                      "description": "nvidia-smi 报告的 GPU 序号。 / GPU index reported by nvidia-smi."
+                    },
+                    "name": {
+                      "type": "string",
+                      "description": "GPU 型号名。 / GPU model name."
+                    },
+                    "utilizationPercent": {
+                      "type": "number",
+                      "description": "GPU 利用率百分比。 / GPU utilization percent."
+                    },
+                    "memoryTotalBytes": {
+                      "type": "integer",
+                      "description": "显存总量，字节。 / Total GPU memory in bytes."
+                    },
+                    "memoryUsedBytes": {
+                      "type": "integer",
+                      "description": "已用显存，字节。 / Used GPU memory in bytes."
+                    },
+                    "temperatureC": {
+                      "type": "number",
+                      "description": "温度，摄氏度。 / Temperature in degrees Celsius."
+                    }
+                  }
+                }
+              },
+              "docker": {
+                "type": ["object", "null"],
+                "additionalProperties": true,
+                "description": "docker CLI 不可用时为 null。`available` 用来区分「没有 docker」和「docker 空闲」。 / Null when the docker CLI is unavailable. `available` distinguishes 'no docker' from 'docker idle'.",
+                "properties": {
+                  "available": {
+                    "type": "boolean",
+                    "description": "目标上是否存在 docker CLI。 / Whether a docker CLI exists on the target."
+                  },
+                  "version": {
+                    "type": "string",
+                    "description": "docker 版本字符串。 / Docker version string."
+                  },
+                  "containers": {
+                    "type": "integer",
+                    "description": "容器总数。 / Total containers."
+                  },
+                  "running": {
+                    "type": "integer",
+                    "description": "运行中的容器数。 / Running containers."
+                  },
+                  "paused": {
+                    "type": "integer",
+                    "description": "已暂停的容器数。 / Paused containers."
+                  },
+                  "stopped": {
+                    "type": "integer",
+                    "description": "已停止的容器数。 / Stopped containers."
+                  },
+                  "images": {
+                    "type": "integer",
+                    "description": "镜像数量。 / Number of images."
+                  },
+                  "error": {
+                    "type": "string",
+                    "description": "docker 失败时的错误文本（通常是 permission denied）。 / Error text when docker failed (usually permission denied)."
+                  }
+                }
+              },
+              "processes": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "进程计数，以及按 CPU / 内存排序的顶部进程。 / Process counts and the top processes by CPU and memory.",
+                "properties": {
+                  "total": {
+                    "type": "integer",
+                    "description": "进程总数。 / Total processes."
+                  },
+                  "topCpu": {
+                    "type": "array",
+                    "description": "CPU 占用最高的进程。 / Processes with the highest CPU usage.",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": true,
+                      "description": "一行进程。 / One process row.",
+                      "properties": {
+                        "pid": {
+                          "type": "integer",
+                          "description": "进程 ID。 / Process id."
+                        },
+                        "user": {
+                          "type": "string",
+                          "description": "进程属主。 / Process owner."
+                        },
+                        "cpuPercent": {
+                          "type": "number",
+                          "description": "CPU 占用百分比。 / CPU usage percent."
+                        },
+                        "memPercent": {
+                          "type": "number",
+                          "description": "内存占用百分比。 / Memory usage percent."
+                        },
+                        "command": {
+                          "type": "string",
+                          "description": "命令行。 / Command line."
+                        }
+                      }
+                    }
+                  },
+                  "topMem": {
+                    "type": "array",
+                    "description": "内存占用最高的进程，结构同 topCpu。 / Processes with the highest memory usage, same shape as topCpu.",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": true,
+                      "description": "一行进程。 / One process row."
+                    }
+                  }
+                }
+              },
+              "services": {
+                "type": "array",
+                "additionalProperties": true,
+                "description": "一小份固定观察名单的 systemd 单元状态。 / systemd unit states for a small fixed watch list.",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "description": "一个被观察的服务。 / One watched service.",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "description": "服务单元名。 / Service unit name."
+                    },
+                    "active": {
+                      "type": "string",
+                      "description": "systemd 的 active 状态（active、inactive、failed……）。 / systemd active state (active, inactive, failed, ...)."
+                    },
+                    "sub": {
+                      "type": "string",
+                      "description": "systemd 的 sub 状态（running、exited、dead……）。 / systemd sub state (running, exited, dead, ...)."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "history": {
+            "type": "array",
+            "description": "滚动 sparkline 采样，最旧的在前。上限由 config.historyLength 决定。 / Rolling sparkline samples, oldest first. Bounded by config.historyLength.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "一次采样。 / One sample.",
+              "properties": {
+                "at": {
+                  "type": "integer",
+                  "description": "采样时刻，Unix epoch 毫秒。 / Sample timestamp, Unix epoch milliseconds."
+                },
+                "cpuPercent": {
+                  "type": "number",
+                  "description": "该次采样的 CPU 百分比。 / CPU percent for this sample."
+                },
+                "memPercent": {
+                  "type": "number",
+                  "description": "该次采样的内存百分比。 / Memory percent for this sample."
+                },
+                "latencyMs": {
+                  "type": "integer",
+                  "description": "该次探测的延迟，毫秒。 / Probe latency for this sample, in milliseconds."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "errors": {
+      "type": "array",
+      "description": "最近一次探测失败的目标，供面板的告警条使用。 / Targets whose last probe failed, for the panel's alert strip.",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "description": "一个失败的目标。 / One failing target.",
+        "properties": {
+          "targetId": {
+            "type": "string",
+            "description": "目标 id。 / Target id."
+          },
+          "name": {
+            "type": "string",
+            "description": "目标名。 / Target name."
+          },
+          "error": {
+            "type": "string",
+            "description": "错误文本。 / Error text."
+          },
+          "at": {
+            "type": "integer",
+            "description": "失败时刻，Unix epoch 毫秒。 / Failure timestamp, Unix epoch milliseconds."
+          },
+          "consecutiveFailures": {
+            "type": "integer",
+            "description": "该目标的连续失败次数。 / Consecutive failures for this target."
+          }
+        }
+      }
+    }
+  }
+}

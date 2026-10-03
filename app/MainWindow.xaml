@@ -1,0 +1,582 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="DshWsxPanel.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:local="using:DshWsxPanel"
+    mc:Ignorable="d">
+
+    <!--
+        这个文件里有三处是「踩过才知道」的写法，改动前请先读 PanelMetrics.cs 的注释：
+
+        1) 所有尺寸都从 Metrics（PanelMetrics）绑定，窗口一跨过分层边界，
+           字号 / 留白 / 条高 / 列宽 / 显示哪些区块会一起变。
+           不用 VisualStateManager：卡片在 DataTemplate 里，VSM 的 Setter 够不到
+           模板内部的具名元素，明细行还是嵌套模板。
+
+        2) 需要 TextTrimming 生效的文本，必须放在 Grid 的 `*` 列里。
+           StackPanel 给子元素的是**无限宽度**，TextTrimming 永远不触发，
+           文字会直接画到右边的按钮底下（看起来就是重叠）。
+           「主机名」「命令行」这两处就是这样处理的。
+
+        3) 进程行 / 磁盘行的列宽写在 TextBlock 上（放在 Auto 列里），不写在
+           ColumnDefinition 上 —— ColumnDefinition 不是 FrameworkElement，
+           拿不到 DataContext，绑不了 Metrics。
+
+        颜色全部来自 {ThemeResource …}，一个色值都没写死。
+        状态点的颜色是「四个同位置的圆点 + Visibility 选一个」，因为
+        {ThemeResource} 没法绑定；这样浅色/深色都由 WinUI 主题决定。
+    -->
+    <Grid x:Name="RootGrid" Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- ==================== 自定义标题栏（整条可拖动） ==================== -->
+        <Grid x:Name="TitleBarDragRegion" Grid.Row="0" Background="Transparent"
+              Height="{Binding Metrics.TitleBarHeight}">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <FontIcon Grid.Column="0" Glyph="&#xE9D9;" Margin="{Binding Metrics.TitleGlyphMargin}"
+                      VerticalAlignment="Center"
+                      FontSize="{Binding Metrics.ButtonIconSize}"
+                      Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+
+            <!-- 标题放在 * 列里并开 TextTrimming：只有 Grid 的列才是硬宽度约束。 -->
+            <TextBlock Grid.Column="1" Text="{Binding Metrics.TitleText}" FontWeight="SemiBold"
+                       VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
+                       FontSize="{Binding Metrics.TitleFontSize}"
+                       Visibility="{Binding Metrics.AppTitleVisibility}"
+                       Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+
+            <!-- 自定义按键 + 系统按钮保留区在同一个右对齐组里。
+                 保留区是**按键后面的兄弟元素**而不是独立列，这样按键一定紧贴
+                 系统按钮左侧，不会随 Grid 列分配漂移。 -->
+            <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,4,0"
+                            Spacing="{Binding Metrics.ButtonSpacing}">
+                    <ToggleButton x:Name="TopmostToggle" Padding="0" MinWidth="0"
+                                  Width="{Binding Metrics.ButtonWidth}" Height="{Binding Metrics.ButtonHeight}"
+                                  AutomationProperties.Name="窗口置顶"
+                                  ToolTipService.ToolTip="窗口置顶">
+                        <FontIcon Glyph="&#xE718;" FontSize="{Binding Metrics.ButtonIconSize}" />
+                    </ToggleButton>
+                    <ToggleButton x:Name="CompactToggle" Padding="0" MinWidth="0"
+                                  Width="{Binding Metrics.ButtonWidth}" Height="{Binding Metrics.ButtonHeight}"
+                                  AutomationProperties.Name="精简模式"
+                                  ToolTipService.ToolTip="精简模式（隐藏 facts / 服务行，进程与磁盘只留 3 行）">
+                        <FontIcon Glyph="&#xE71D;" FontSize="{Binding Metrics.ButtonIconSize}" />
+                    </ToggleButton>
+                    <Button x:Name="ReloadButton" Padding="0" MinWidth="0"
+                            Width="{Binding Metrics.ButtonWidth}" Height="{Binding Metrics.ButtonHeight}"
+                            AutomationProperties.Name="立即重新读取"
+                            ToolTipService.ToolTip="立即重新读取状态文件">
+                        <FontIcon Glyph="&#xE72C;" FontSize="{Binding Metrics.ButtonIconSize}" />
+                    </Button>
+                    <Button x:Name="SettingsButton" Padding="0" MinWidth="0"
+                            Width="{Binding Metrics.ButtonWidth}" Height="{Binding Metrics.ButtonHeight}"
+                            AutomationProperties.Name="设置"
+                            ToolTipService.ToolTip="设置（明暗主题 / 状态文件信息）"
+                            Click="OnSettingsButtonClick">
+                        <FontIcon Glyph="&#xE713;" FontSize="{Binding Metrics.ButtonIconSize}" />
+                        <Button.Flyout>
+                            <Flyout x:Name="SettingsFlyout" Placement="BottomEdgeAlignedRight">
+                                <!-- 宽度**不写死**：由代码在 Opening 时按客户区宽度赋
+                                     Metrics.FlyoutWidth = clamp(客户区 − 32, 220, 330)。
+                                     写死 330 在最小窗口下就没有余量了，窗口再窄一点就会溢出。
+                                     见 MainWindow.SyncSettingsControls / PanelMetrics.FlyoutWidth。
+                                     另外这里不给它绑 XAML：Flyout 内容在弹出层里，
+                                     DataContext 不保证传得进来，绑定失败会安静地退回
+                                     「按内容撑开」——那反而可能比 330 更宽。 -->
+                                <StackPanel x:Name="SettingsPanel" Spacing="16">
+                                    <TextBlock Text="设置" FontWeight="SemiBold"
+                                               FontSize="{Binding Metrics.TitleFontSize}"
+                                               Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+
+                                    <StackPanel Spacing="6">
+                                        <TextBlock Text="明暗主题" FontSize="12"
+                                                   Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                                        <!-- 「跟随系统」时会实时响应系统切换；
+                                             选浅色/深色则覆盖系统设置，并随窗口一起保存。 -->
+                                        <ComboBox x:Name="ThemeSelector" HorizontalAlignment="Stretch"
+                                                  SelectionChanged="OnThemeSelectionChanged">
+                                            <ComboBoxItem Content="跟随系统" />
+                                            <ComboBoxItem Content="浅色" />
+                                            <ComboBoxItem Content="深色" />
+                                        </ComboBox>
+                                    </StackPanel>
+
+                                    <StackPanel Spacing="4">
+                                        <TextBlock Text="状态文件" FontSize="12"
+                                                   Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                                        <TextBlock x:Name="SettingsStatePath" FontSize="11" TextWrapping="Wrap"
+                                                   FontFamily="Cascadia Mono,Consolas,Courier New"
+                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    </StackPanel>
+
+                                    <StackPanel Spacing="4">
+                                        <TextBlock Text="宿主" FontSize="12"
+                                                   Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                                        <TextBlock x:Name="SettingsHostInfo" FontSize="11" TextWrapping="Wrap"
+                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    </StackPanel>
+
+                                    <TextBlock Text="窗口位置、大小、置顶、精简与主题都会一起保存，下次打开保持不变。"
+                                               FontSize="11" TextWrapping="Wrap"
+                                               Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                                </StackPanel>
+                            </Flyout>
+                        </Button.Flyout>
+                    </Button>
+                </StackPanel>
+                <!-- 系统的 最小化/最大化/关闭 就画在这块保留区里 -->
+                <Border Width="{Binding Metrics.TitleBarReserve}" Height="1" />
+            </StackPanel>
+        </Grid>
+
+        <!-- ==================== 头部摘要 + 错误条 ==================== -->
+        <StackPanel Grid.Row="1" Margin="{Binding Metrics.HeaderMargin}" Spacing="6">
+            <!-- 摘要也遵守「硬宽度列」规则：第一段放 * 列并开裁剪，
+                 后面几个彩色的计数放在 Auto 列 —— 窄窗口下先截断的应该是主摘要，
+                 而不是把「1 失败」这种最该看见的信息挤出去。 -->
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="{Binding HeaderText}" FontWeight="SemiBold"
+                           TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                           FontSize="{Binding Metrics.TitleFontSize}"
+                           Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                <TextBlock Grid.Column="1" Text="{Binding FailingText}" Margin="6,0,0,0"
+                           VerticalAlignment="Center" FontWeight="SemiBold"
+                           Visibility="{Binding FailingVisibility}"
+                           FontSize="{Binding Metrics.SmallFontSize}"
+                           Foreground="{ThemeResource SystemFillColorCriticalBrush}" />
+                <TextBlock Grid.Column="2" Text="{Binding ProbingText}" Margin="6,0,0,0"
+                           VerticalAlignment="Center"
+                           Visibility="{Binding ProbingVisibility}"
+                           FontSize="{Binding Metrics.SmallFontSize}"
+                           Foreground="{ThemeResource SystemFillColorCautionBrush}" />
+                <TextBlock Grid.Column="3" Text="{Binding DockerSummaryText}" Margin="6,0,0,0"
+                           VerticalAlignment="Center"
+                           Visibility="{Binding DockerSummaryVisibility}"
+                           FontSize="{Binding Metrics.SmallFontSize}"
+                           Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+            </Grid>
+
+            <!-- errors[] 的告警条 -->
+            <Border Visibility="{Binding ErrorStripVisibility}"
+                    Background="{ThemeResource SystemFillColorCriticalBackgroundBrush}"
+                    BorderBrush="{ThemeResource SystemFillColorCriticalBrush}"
+                    BorderThickness="1" CornerRadius="6"
+                    Padding="{Binding Metrics.InnerPadding}">
+                <StackPanel Spacing="3">
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <FontIcon Glyph="&#xE783;" VerticalAlignment="Center"
+                                  FontSize="{Binding Metrics.ButtonIconSize}"
+                                  Foreground="{ThemeResource SystemFillColorCriticalBrush}" />
+                        <TextBlock Text="有目标探测失败" FontWeight="SemiBold" VerticalAlignment="Center"
+                                   FontSize="{Binding Metrics.BodyFontSize}"
+                                   Foreground="{ThemeResource SystemFillColorCriticalBrush}" />
+                    </StackPanel>
+                    <TextBlock Text="{Binding ErrorStripText}" TextWrapping="Wrap"
+                               FontSize="{Binding Metrics.SmallFontSize}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                </StackPanel>
+            </Border>
+        </StackPanel>
+
+        <!-- ==================== 目标卡片列表 ==================== -->
+        <Grid Grid.Row="2">
+            <!-- 内边距放在 ItemsRepeater 的 Margin 上，让「列表留白」和卡片间距
+                 由同一套 Metrics 控制。HorizontalScrollMode 必须显式关掉：
+                 横向滚动一旦生效，内容会被按无限宽度测量，卡片就会一路撑出去，
+                 TextTrimming 也全部失效。
+
+                 但**只关横向滚动还不够**：ScrollViewer 约束的是它自己的宽度，
+                 管不到 StackLayout 用什么宽度去测量每个 item。所以卡片的宽度
+                 另外由 Metrics.CardWidth（= 视口宽度 − 左右内边距）显式给出，
+                 测量约束才是硬的。 -->
+            <ScrollViewer x:Name="TargetsScroll"
+                          VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled"
+                          HorizontalScrollMode="Disabled">
+                <ItemsRepeater x:Name="TargetsRepeater" ItemsSource="{Binding Targets}"
+                               Margin="{Binding Metrics.ScrollPadding}">
+                    <ItemsRepeater.Layout>
+                        <StackLayout Spacing="0" />
+                    </ItemsRepeater.Layout>
+                    <ItemsRepeater.ItemTemplate>
+                        <DataTemplate>
+                            <!-- 宽度显式绑定到视口宽度：见 TargetsScroll 上面的注释。
+                                 HorizontalAlignment=Left 让卡片严格用这个宽度，
+                                 不被父级的拉伸逻辑改写。 -->
+                            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                    BorderThickness="1" CornerRadius="8"
+                                    HorizontalAlignment="Left"
+                                    Width="{Binding Metrics.CardWidth}"
+                                    Padding="{Binding Metrics.CardPadding}"
+                                    Margin="{Binding Metrics.CardMargin}">
+                                <StackPanel Spacing="{Binding Metrics.CardSpacing}">
+
+                                    <!-- 第 1 行：状态点 · 名字 · 类型角标 · 状态词 -->
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+
+                                        <!-- 状态点：四个同位置的圆点，各用一条主题资源，
+                                             用 Visibility 选一个 —— {ThemeResource} 绑不了，
+                                             但这样配色仍然 100% 由主题决定。 -->
+                                        <Grid Grid.Column="0" Margin="0,0,8,0" VerticalAlignment="Center">
+                                            <Ellipse Width="{Binding Metrics.StatusDotSize}"
+                                                     Height="{Binding Metrics.StatusDotSize}"
+                                                     Visibility="{Binding OnlineDotVisibility}"
+                                                     Fill="{ThemeResource SystemFillColorSuccessBrush}" />
+                                            <Ellipse Width="{Binding Metrics.StatusDotSize}"
+                                                     Height="{Binding Metrics.StatusDotSize}"
+                                                     Visibility="{Binding OfflineDotVisibility}"
+                                                     Fill="{ThemeResource SystemFillColorCriticalBrush}" />
+                                            <Ellipse Width="{Binding Metrics.StatusDotSize}"
+                                                     Height="{Binding Metrics.StatusDotSize}"
+                                                     Visibility="{Binding ProbingDotVisibility}"
+                                                     Fill="{ThemeResource SystemFillColorCautionBrush}" />
+                                            <Ellipse Width="{Binding Metrics.StatusDotSize}"
+                                                     Height="{Binding Metrics.StatusDotSize}"
+                                                     Visibility="{Binding UnknownDotVisibility}"
+                                                     Fill="{ThemeResource SystemFillColorNeutralBrush}" />
+                                        </Grid>
+
+                                        <TextBlock Grid.Column="1" Text="{Binding Name}" FontWeight="SemiBold"
+                                                   TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                                                   FontSize="{Binding Metrics.TitleFontSize}"
+                                                   Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+
+                                        <!-- 类型角标：WSL 用强调色，SSH 用中性色，两块只显示一块 -->
+                                        <Border Grid.Column="2" Margin="6,0,0,0" CornerRadius="4"
+                                                Padding="5,1,5,1" VerticalAlignment="Center"
+                                                Visibility="{Binding WslBadgeVisibility}"
+                                                Background="{ThemeResource AccentFillColorDefaultBrush}">
+                                            <TextBlock Text="WSL" FontWeight="SemiBold"
+                                                       FontSize="{Binding Metrics.BadgeFontSize}"
+                                                       Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
+                                        </Border>
+                                        <Border Grid.Column="2" Margin="6,0,0,0" CornerRadius="4"
+                                                Padding="5,1,5,1" VerticalAlignment="Center"
+                                                Visibility="{Binding SshBadgeVisibility}"
+                                                Background="{ThemeResource SubtleFillColorSecondaryBrush}">
+                                            <TextBlock Text="SSH" FontWeight="SemiBold"
+                                                       FontSize="{Binding Metrics.BadgeFontSize}"
+                                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                        </Border>
+
+                                        <TextBlock Grid.Column="3" Text="{Binding StatusLabel}" Margin="8,0,0,0"
+                                                   VerticalAlignment="Center" FontWeight="SemiBold"
+                                                   FontSize="{Binding Metrics.BodyFontSize}"
+                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    </Grid>
+
+                                    <!-- 第 2 行：主机 · 延迟 · 探测年龄 · 冷启动角标 -->
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="{Binding HostText}"
+                                                   TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                                                   FontFamily="Cascadia Mono,Consolas,Courier New"
+                                                   FontSize="{Binding Metrics.MonoFontSize}"
+                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                        <TextBlock Grid.Column="1" Text="{Binding LatencyText}" Margin="8,0,0,0"
+                                                   VerticalAlignment="Center"
+                                                   FontSize="{Binding Metrics.SmallFontSize}"
+                                                   Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                                        <TextBlock Grid.Column="2" Text="{Binding ProbeAgeText}" Margin="8,0,0,0"
+                                                   VerticalAlignment="Center"
+                                                   FontSize="{Binding Metrics.SmallFontSize}"
+                                                   Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                                        <TextBlock Grid.Column="3" Text="冷启动" Margin="8,0,0,0"
+                                                   VerticalAlignment="Center"
+                                                   Visibility="{Binding WokeVisibility}"
+                                                   FontSize="{Binding Metrics.SmallFontSize}"
+                                                   Foreground="{ThemeResource SystemFillColorCautionBrush}" />
+                                    </Grid>
+
+                                    <!-- 连接错误原文。远程命令的输出可能很长、而且中间有
+                                         一长串没有空格的可断点（WSL 的错误码、URL），
+                                         所以这里靠「卡片宽度是显式的」来保证换行一定发生在
+                                         卡片内部，而不是把卡片顶宽。 -->
+                                    <Border Visibility="{Binding ErrorVisibility}"
+                                            Background="{ThemeResource SubtleFillColorSecondaryBrush}"
+                                            CornerRadius="5" Padding="{Binding Metrics.InnerPadding}">
+                                        <TextBlock Text="{Binding ErrorText}" TextWrapping="Wrap" MaxLines="4"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   FontSize="{Binding Metrics.SmallFontSize}"
+                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    </Border>
+
+                                    <!-- 静态身份（内核 / CPU / 运行时长） -->
+                                    <TextBlock Text="{Binding FactsText}" TextTrimming="CharacterEllipsis"
+                                               Visibility="{Binding FactsVisibility}"
+                                               FontSize="{Binding Metrics.SmallFontSize}"
+                                               Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+
+                                    <!-- ==================== 指标区 ==================== -->
+                                    <StackPanel Spacing="{Binding Metrics.SectionSpacing}"
+                                                Visibility="{Binding MetricsVisibility}">
+
+                                        <!-- CPU + load -->
+                                        <Grid Visibility="{Binding CpuVisibility}">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="CPU" CharacterSpacing="60"
+                                                       HorizontalAlignment="Left"                                                       Width="{Binding Metrics.MetricLabelWidth}"
+                                                       FontSize="{Binding Metrics.SmallFontSize}"
+                                                       Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                                       VerticalAlignment="Center" />
+                                            <TextBlock Grid.Column="1" Text="{Binding CpuText}" Margin="8,0,0,0"
+                                                       VerticalAlignment="Center" FontWeight="SemiBold"
+                                                       FontSize="{Binding Metrics.BodyFontSize}"
+                                                       Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                                            <TextBlock Grid.Column="2" Text="{Binding LoadText}"
+                                                       VerticalAlignment="Center"
+                                                       FontFamily="Cascadia Mono,Consolas,Courier New"
+                                                       FontSize="{Binding Metrics.SmallFontSize}"
+                                                       Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                                        </Grid>
+
+                                        <!-- 内存：数值 + 占比 + 进度条 -->
+                                        <StackPanel Spacing="3" Visibility="{Binding MemVisibility}">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Grid.Column="0" Text="内存" CharacterSpacing="60"
+                                                           HorizontalAlignment="Left"                                                           Width="{Binding Metrics.MetricLabelWidth}"
+                                                           FontSize="{Binding Metrics.SmallFontSize}"
+                                                           Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                                           VerticalAlignment="Center" />
+                                                <TextBlock Grid.Column="1" Text="{Binding MemText}" Margin="8,0,0,0"
+                                                           VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
+                                                           FontSize="{Binding Metrics.BodyFontSize}"
+                                                           Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                                                <TextBlock Grid.Column="2" Text="{Binding MemPercentText}"
+                                                           VerticalAlignment="Center" FontWeight="SemiBold"
+                                                           FontSize="{Binding Metrics.BodyFontSize}"
+                                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                            </Grid>
+                                            <ProgressBar Value="{Binding MemPercent}" Maximum="100"
+                                                         Height="{Binding Metrics.BarHeight}"
+                                                         MinHeight="0"
+                                                         CornerRadius="3"
+                                                         Foreground="{ThemeResource AccentFillColorDefaultBrush}"
+                                                         Background="{ThemeResource SubtleFillColorSecondaryBrush}" />
+                                            <TextBlock Text="{Binding SwapText}"
+                                                       Visibility="{Binding SwapVisibility}"
+                                                       FontSize="{Binding Metrics.SmallFontSize}"
+                                                       Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                                        </StackPanel>
+
+                                        <!-- 每个挂载点一条用量条 -->
+                                        <StackPanel Spacing="4" Visibility="{Binding DisksVisibility}">
+                                            <TextBlock Text="磁盘" CharacterSpacing="60"
+                                                       HorizontalAlignment="Left"
+                                                       FontSize="{Binding Metrics.SmallFontSize}"
+                                                       Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                                            <ItemsControl ItemsSource="{Binding Disks}">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <StackPanel Spacing="4" Margin="0,0,0,6">
+                                                            <!-- 这一行左边挂载点、右边用量，两者抢宽度。
+                                                                 让步的规则是**写死**的：挂载点是 `*` 且开裁剪，
+                                                                 用量那一列给一个最小宽度、**不加裁剪** ——
+                                                                 用量数字（used/total · pct%）是操作上真正要看的，
+                                                                 空间不够时被截断的必须是挂载点，不能是关键数字。 -->
+                                                            <Grid>
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="*" />
+                                                                    <ColumnDefinition Width="Auto" />
+                                                                    <ColumnDefinition Width="Auto" />
+                                                                </Grid.ColumnDefinitions>
+                                                                <TextBlock Grid.Column="0" Text="{Binding Mount}"
+                                                                           TextTrimming="CharacterEllipsis"
+                                                                           VerticalAlignment="Center"
+                                                                           FontFamily="Cascadia Mono,Consolas,Courier New"
+                                                                           FontSize="{Binding Metrics.MonoFontSize}"
+                                                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                                <FontIcon Grid.Column="1" Glyph="&#xE7BA;" Margin="6,0,0,0"
+                                                                          VerticalAlignment="Center"
+                                                                          Visibility="{Binding DangerVisibility}"
+                                                                          FontSize="{Binding Metrics.SmallFontSize}"
+                                                                          Foreground="{ThemeResource SystemFillColorCriticalBrush}" />
+                                                                <TextBlock Grid.Column="2" Text="{Binding Text}" Margin="8,0,0,0"
+                                                                           MinWidth="{Binding Metrics.DiskValueMinWidth}"
+                                                                           VerticalAlignment="Center"
+                                                                           FontSize="{Binding Metrics.SmallFontSize}"
+                                                                           Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                                                            </Grid>
+                                                            <!-- MinHeight=0 是必须的：WinUI 的 ProgressBar 默认样式带一个
+                                                                 最小高度，只设 Height 时模板仍会按自己的高度画，
+                                                                 结果就是进度条压在上下两行的文字上（实测被用户看到过）。
+                                                                 这里把最小高度压掉、再加 1 DIP 上边距，
+                                                                 让进度条有自己独立的一条带。 -->
+                                                            <ProgressBar Value="{Binding Percent}" Maximum="100"
+                                                                         Height="{Binding Metrics.BarHeight}"
+                                                                         MinHeight="0"
+                                                                         Margin="0,1,0,0"
+                                                                         CornerRadius="3"
+                                                                         Foreground="{ThemeResource AccentFillColorDefaultBrush}"
+                                                                         Background="{ThemeResource SubtleFillColorSecondaryBrush}" />
+                                                        </StackPanel>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </StackPanel>
+
+                                        <!-- GPU -->
+                                        <StackPanel Spacing="3" Visibility="{Binding GpusVisibility}">
+                                            <ItemsControl ItemsSource="{Binding Gpus}">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <Grid>
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="*" />
+                                                                <ColumnDefinition Width="Auto" />
+                                                            </Grid.ColumnDefinitions>
+                                                            <TextBlock Grid.Column="0" Text="{Binding Title}"
+                                                                       TextTrimming="CharacterEllipsis"
+                                                                       VerticalAlignment="Center"
+                                                                       FontSize="{Binding Metrics.BodyFontSize}"
+                                                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                            <TextBlock Grid.Column="1" Text="{Binding Text}" Margin="8,0,0,0"
+                                                                       VerticalAlignment="Center"
+                                                                       FontFamily="Cascadia Mono,Consolas,Courier New"
+                                                                       FontSize="{Binding Metrics.SmallFontSize}"
+                                                                       Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                                                        </Grid>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </StackPanel>
+
+                                        <!-- docker -->
+                                        <TextBlock Text="{Binding DockerText}" TextWrapping="Wrap"
+                                                   Visibility="{Binding DockerVisibility}"
+                                                   FontSize="{Binding Metrics.SmallFontSize}"
+                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+
+                                        <!-- 进程 top-N -->
+                                        <StackPanel Spacing="{Binding Metrics.SectionSpacing}"
+                                                    Visibility="{Binding ProcessesVisibility}">
+                                            <Border Height="1"
+                                                    Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
+                                            <TextBlock Text="{Binding ProcHeaderText}" CharacterSpacing="60"
+                                                       FontSize="{Binding Metrics.SmallFontSize}"
+                                                       Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                                            <ItemsControl ItemsSource="{Binding Processes}">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <!-- 列宽写在 TextBlock 上（Auto 列会量出显式宽度）：
+                                                             ColumnDefinition 拿不到 DataContext，绑不了 Metrics。
+                                                             这样多行一定对齐，超长命令行只会被截断、不会串列。 -->
+                                                        <Grid Height="{Binding Metrics.RowHeight}">
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="Auto" />
+                                                                <ColumnDefinition Width="Auto" />
+                                                                <ColumnDefinition Width="Auto" />
+                                                                <ColumnDefinition Width="*" />
+                                                            </Grid.ColumnDefinitions>
+                                                            <TextBlock Grid.Column="0" Text="{Binding Pid}"
+                                                                       Width="{Binding Metrics.ProcPidWidth}"
+                                                                       VerticalAlignment="Center"
+                                                                       FontFamily="Cascadia Mono,Consolas,Courier New"
+                                                                       FontSize="{Binding Metrics.SmallFontSize}"
+                                                                       Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                                                            <TextBlock Grid.Column="1" Text="{Binding Cpu}"
+                                                                       Width="{Binding Metrics.ProcCpuWidth}"
+                                                                       VerticalAlignment="Center" FontWeight="SemiBold"
+                                                                       FontSize="{Binding Metrics.SmallFontSize}"
+                                                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                            <TextBlock Grid.Column="2" Text="{Binding User}"
+                                                                       Width="{Binding Metrics.ProcUserWidth}"
+                                                                       TextTrimming="CharacterEllipsis"
+                                                                       VerticalAlignment="Center"
+                                                                       FontSize="{Binding Metrics.SmallFontSize}"
+                                                                       Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                                                            <TextBlock Grid.Column="3" Text="{Binding Command}"
+                                                                       TextTrimming="CharacterEllipsis"
+                                                                       VerticalAlignment="Center"
+                                                                       FontFamily="Cascadia Mono,Consolas,Courier New"
+                                                                       FontSize="{Binding Metrics.MonoFontSize}"
+                                                                       Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                                                        </Grid>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </StackPanel>
+
+                                        <!-- systemd 服务 -->
+                                        <TextBlock Text="{Binding ServicesText}" TextWrapping="Wrap"
+                                                   Visibility="{Binding ServicesVisibility}"
+                                                   FontSize="{Binding Metrics.SmallFontSize}"
+                                                   Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                                    </StackPanel>
+
+                                    <!-- 在线但没有指标时的说明（和「离线」是两件事） -->
+                                    <TextBlock Text="{Binding NoMetricsText}" TextWrapping="Wrap"
+                                               Visibility="{Binding NoMetricsVisibility}"
+                                               FontSize="{Binding Metrics.SmallFontSize}"
+                                               Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                                </StackPanel>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsRepeater.ItemTemplate>
+                </ItemsRepeater>
+            </ScrollViewer>
+
+            <!-- 空状态 / 读取失败时的完整说明（有卡片时由 VM 收起） -->
+            <TextBlock Text="{Binding EmptyText}" HorizontalAlignment="Center"
+                       VerticalAlignment="Center" Margin="24" TextWrapping="Wrap"
+                       FontSize="{Binding Metrics.BodyFontSize}"
+                       Visibility="{Binding EmptyVisibility}"
+                       Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+        </Grid>
+
+        <!-- ==================== 状态栏 ==================== -->
+        <Border Grid.Row="3" Padding="{Binding Metrics.StatusBarPadding}"
+                Background="{ThemeResource SolidBackgroundFillColorSecondaryBrush}"
+                BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
+                BorderThickness="0,1,0,0">
+            <TextBlock Text="{Binding StatusBarText}" TextTrimming="CharacterEllipsis"
+                       FontSize="{Binding Metrics.SmallFontSize}"
+                       Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+        </Border>
+    </Grid>
+</Window>
+
+
+
+

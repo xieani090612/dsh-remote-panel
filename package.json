@@ -1,0 +1,66 @@
+{
+  "name": "dsh-remote-panel",
+  "version": "0.1.1",
+  "private": true,
+  "description": "DSH 远程/WSL 状态预览：探测本机 WSL 发行版与指定 IP 的 SSH 机器（CPU/内存/磁盘/GPU/Docker/进程/服务），渲染到独立 WinUI 3 悬浮窗，并提供 /wsx 命令、remote_* 原生工具、Skills 与 MCP stdio 服务器",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "winui3",
+    "wsl",
+    "ssh",
+    "remote",
+    "monitoring",
+    "mcp"
+  ],
+  "type": "module",
+  "license": "MIT",
+  "main": "lib/index.js",
+  "bin": {
+    "dsh-remote-panel-mcp": "bin/mcp-server.js"
+  },
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./mcp": "./bin/mcp-server.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "lib",
+    "bin",
+    "scripts",
+    "skills",
+    "dist",
+    "docs",
+    "locale",
+    "cordis.patch.yml",
+    "install.ps1",
+    "build.ps1",
+    "sign-panel.ps1",
+    "README.md",
+    "INSTALL.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "//": "release.ps1 是维护者专用（打 zip/tgz + 隐私自检），刻意不进 files：目标是分发给使用者的包，不该带维护工具。",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": []
+    }
+  },
+  "scripts": {
+    "test": "node test/run-all.mjs",
+    "mcp": "node bin/mcp-server.js",
+    "build:panel": "pwsh -NoProfile -File ./build.ps1 -Pack"
+  }
+}

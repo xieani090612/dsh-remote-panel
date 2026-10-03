@@ -1,0 +1,26 @@
+# 构建产物
+dist/
+app/bin/
+app/obj/
+*.pdb
+
+# 面板写入的运行时状态（属于使用者本机，不该入库）
+dist/window.json
+dist/WsxPanel.log
+app/bin/**/window.json
+
+# 打包/发布产物
+*.tgz
+*.tgz.sha256
+release/
+
+# 维护者专用脚本（不进发行包；见 package.json 的 files）
+# 注意：release.ps1 留在仓库里供维护者用，但**不随包发布**。
+
+# 编辑器 / 系统
+.vs/
+.vscode/
+.idea/
+*.user
+Thumbs.db
+desktop.ini
