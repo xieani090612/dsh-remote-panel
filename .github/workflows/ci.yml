@@ -84,14 +84,31 @@ jobs:
           dotnet build app/WsxPanel.csproj -c Release --nologo -v minimal
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
-      - name: Verify the panel binary was produced
+      - name: Verify the panel binary is runnable (headless self-check)
         shell: pwsh
         run: |
           $exe = 'app/bin/Release/net8.0-windows10.0.19041.0/win-x64/WsxPanel.exe'
           if (-not (Test-Path $exe)) { throw "构建成功但没找到 $exe" }
-          # headless 自检：不开窗口，只读一次状态文件并把结果打出来。
-          # 退出码 2 = 文件不存在（CI 上没有宿主，属正常），只要不是崩溃/解析错误即可。
-          & $exe --dump-status --state (Join-Path $env:RUNNER_TEMP 'nonexistent.json')
-          $code = $LASTEXITCODE
-          Write-Host "dump-status exit=$code"
-          if ($code -ne 2) { throw "预期退出码 2（状态文件不存在），实际 $code" }
+
+          # headless 自检：不开窗口，只读一次状态文件并把结果打到 stdout。
+          #
+          # 注意：**不要用 $LASTEXITCODE 判定**。WsxPanel 是 WinExe（GUI 子系统），
+          # 从 PowerShell 调用时 $LASTEXITCODE 可能是空的 —— 第一版 CI 就是因为
+          # `if ($code -ne 2)` 拿到空值而失败，而程序其实完全正常
+          # （日志里能看到 state=missing 与正确的 detail）。
+          #
+          # 实测：`& $exe ...` 连 stdout 都拿不到（空输出），而
+          # Start-Process -Wait 配合 -RedirectStandardOutput 两者都稳定可得。
+          # 所以这里用 Start-Process，并对「退出码 + 输出内容」都做断言。
+          $outFile = Join-Path $env:RUNNER_TEMP 'dump-status.txt'
+          $errFile = Join-Path $env:RUNNER_TEMP 'dump-status.err.txt'
+          $proc = Start-Process -FilePath $exe `
+            -ArgumentList @('--dump-status', '--state', (Join-Path $env:RUNNER_TEMP 'nonexistent.json')) `
+            -PassThru -Wait -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+          $text = Get-Content $outFile -Raw -ErrorAction SilentlyContinue
+          Write-Host $text
+
+          if ($proc.ExitCode -ne 2) { throw "预期退出码 2（状态文件不存在），实际 $($proc.ExitCode)" }
+          if ($text -notmatch '(?m)^state=missing\r?$') { throw '预期输出 state=missing' }
+          if ($text -notmatch '(?m)^detail=.+') { throw '预期给出可读的失败原因（detail=…）' }
+          Write-Host '面板二进制可运行，headless 自检通过 ✓'
