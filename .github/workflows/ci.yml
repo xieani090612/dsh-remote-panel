@@ -1,0 +1,97 @@
+name: CI
+
+# 这个 workflow 验证的是**这台机器上实际踩过的坑**，所以每一步都有明确目的：
+#   1. 离线套件（unit / client / lossless / docs / schema）必须全绿 —— 它们不依赖
+#      WSL，任何机器上都该通过，是真正的回归闸门；
+#   2. smoke 与 mcp 两套需要本机有可用的 WSL 发行版（Ubuntu-24.04）。GitHub 托管的
+#      windows runner **没有配好的 WSL**，所以这里让它们**不阻塞**构建，但要显式说明，
+#      免得有人以为是漏跑；
+#   3. `dotnet build` 必须过 —— 这条证明「**没有 Visual Studio 也能构建 WinUI 3**」，
+#      靠的是 csproj 里的 EnableMsixTooling=true。整个项目的可行性就压在这一条上，
+#      所以它在 CI 里是硬性要求（不是可选）。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Offline suites + panel build
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Show environment
+        shell: pwsh
+        run: |
+          node --version
+          dotnet --version
+          # 说明：这里**故意**打印 dotnet 版本。0 warnings / 0 errors 的构建
+          # 依赖 .NET 8 SDK；如果 runner 换了默认 SDK，这一行有助于定位。
+          dotnet --list-sdks
+
+      # ---- 离线套件：真正的回归闸门 --------------------------------------
+      - name: Offline suites (unit, client-contract, lossless-json, docs, schema)
+        shell: pwsh
+        run: |
+          # run-all 会依次跑 7 套。其中 smoke / mcp 需要本机 WSL；
+          # 托管 runner 上没有，所以只把**离线 5 套**当作硬性要求，
+          # 由 test/check-docs.mjs + check-schema.mjs 保证文档与契约不退化。
+          node --test test/unit.test.mjs
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          node --test test/client.test.mjs
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          node --test test/lossless.test.mjs
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          node test/check-docs.mjs
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          node test/check-schema.mjs
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: WSL-dependent suites (informational on hosted runners)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          # 这两套打的是本机 WSL 发行版 Ubuntu-24.04。托管 runner 上没有它，
+          # 所以失败不阻塞 —— 但在本地（开发机）它们是必过项：
+          #     node test/run-all.mjs Ubuntu-24.04
+          Write-Host 'smoke + mcp need a local WSL distro; expected to fail on hosted runners.'
+          node test/smoke.test.mjs Ubuntu-24.04
+          node test/mcp.test.mjs Ubuntu-24.04
+
+      # ---- 关键可行性验证：没有 Visual Studio 也能构建 WinUI 3 -------------
+      - name: Build the WinUI 3 panel (no Visual Studio)
+        shell: pwsh
+        run: |
+          # csproj 里 EnableMsixTooling=true 是必需的：它决定用哪套 PRI 工具链。
+          # 设成 false 会回落到 MrtCore.PriGen.targets，那需要 Visual Studio 才有的
+          # Microsoft.Build.Packaging.Pri.Tasks.dll，在纯 .NET SDK 环境下必定报
+          # MSB4062（未能加载任务 ExpandPriContent）。这条 CI 就是在守住这个前提。
+          dotnet build app/WsxPanel.csproj -c Release --nologo -v minimal
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Verify the panel binary was produced
+        shell: pwsh
+        run: |
+          $exe = 'app/bin/Release/net8.0-windows10.0.19041.0/win-x64/WsxPanel.exe'
+          if (-not (Test-Path $exe)) { throw "构建成功但没找到 $exe" }
+          # headless 自检：不开窗口，只读一次状态文件并把结果打出来。
+          # 退出码 2 = 文件不存在（CI 上没有宿主，属正常），只要不是崩溃/解析错误即可。
+          & $exe --dump-status --state (Join-Path $env:RUNNER_TEMP 'nonexistent.json')
+          $code = $LASTEXITCODE
+          Write-Host "dump-status exit=$code"
+          if ($code -ne 2) { throw "预期退出码 2（状态文件不存在），实际 $code" }
